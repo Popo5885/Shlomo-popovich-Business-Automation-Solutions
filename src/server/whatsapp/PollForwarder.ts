@@ -30,7 +30,7 @@ export class PollForwarder {
 
     const question = pollMsg.name || 'סקר';
     const options = (pollMsg.options || []).map((o) => o.optionName || '').filter(Boolean);
-    const selectableCount = (pollMsg as proto.IPollCreationMessage).selectableOptionsCount || 1;
+    const selectableCount = (pollMsg as proto.Message.IPollCreationMessage).selectableOptionsCount || 1;
 
     console.log(`📊 PollForwarder: forwarding poll "${question}" to ${campaign.targets.length} groups`);
 

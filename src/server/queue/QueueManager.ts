@@ -1,4 +1,5 @@
 import { Queue, Worker, QueueEvents } from 'bullmq';
+import { WAMessage } from '@whiskeysockets/baileys';
 import { redis } from '@/lib/redis';
 import { BroadcastWorker, BroadcastJobData } from './BroadcastWorker';
 
@@ -44,7 +45,7 @@ export class QueueManager {
   async enqueueBroadcast(data: {
     clientId: string;
     sendingNumberId: string;
-    msg: Parameters<typeof BroadcastWorker.prototype.process>[0]['data']['msg'];
+    msg: WAMessage;
     campaign: {
       id: string;
       targets: { groupJid: string; numberId: string | null }[];

@@ -105,10 +105,7 @@ export class BroadcastSender {
         if (textSuffix) text = `${text}\n${textSuffix}`;
       }
 
-      return {
-        text,
-        linkPreview: !noLink && !!groupLink,
-      };
+      return { text };
     }
 
     if (
@@ -117,8 +114,8 @@ export class BroadcastSender {
       contentType === 'documentMessage' ||
       contentType === 'audioMessage'
     ) {
-      const mediaMsg = (content as Record<string, proto.IImageMessage | proto.IVideoMessage | proto.IDocumentMessage | proto.IAudioMessage>)[contentType!];
-      let caption = (mediaMsg as proto.IImageMessage)?.caption || '';
+      const mediaMsg = (content as Record<string, proto.Message.IImageMessage | proto.Message.IVideoMessage | proto.Message.IDocumentMessage | proto.Message.IAudioMessage>)[contentType!];
+      let caption = (mediaMsg as proto.Message.IImageMessage)?.caption || '';
 
       const noLink = caption.endsWith('#');
       if (noLink) {
