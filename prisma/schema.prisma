@@ -1,0 +1,299 @@
+// This is your Prisma schema file
+// Updated with: Billing/CRM, Staff RBAC, Pairing Codes, White-Label, Anti-Ban, Watchdog
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Super Admin Settings ──────────────────────────────────────────────────────
+
+model SuperAdminSettings {
+  id              String   @id @default(cuid())
+  blockedKeywords String[]
+  globalPaused    Boolean  @default(false)
+  // Feature flags
+  featureFlags    Json     @default("{}")
+  // AI assistant system prompt
+  aiSystemPrompt  String?
+  updatedAt       DateTime @updatedAt
+}
+
+// ─── Staff (Employee) Accounts ────────────────────────────────────────────────
+
+model Staff {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  passwordHash String
+  role         StaffRole @default(SUPPORT)
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+}
+
+enum StaffRole {
+  SUPER_ADMIN  // Full access
+  SUPPORT      // View logs, reset limits, help connect — NO finance/delete
+  BILLING_ONLY // Finance tab only
+}
+
+// ─── Clients ──────────────────────────────────────────────────────────────────
+
+model Client {
+  id           String             @id @default(cuid())
+  name         String
+  email        String             @unique
+  passwordHash String
+  phone        String?
+  company      String?
+  dailyLimit   Int                @default(500)
+  monthlyLimit Int                @default(10000)
+  dailyUsage   Int                @default(0)
+  monthlyUsage Int                @default(0)
+  isActive     Boolean            @default(true)
+  /// JSON: { start: "HH:MM", end: "HH:MM", timezone: "Asia/Jerusalem" }
+  blockedHours Json?
+
+  // ── Billing / CRM ────────────────────────────────────────────────────────
+  subscriptionStatus SubscriptionStatus @default(TRIAL)
+  subscriptionPlan   String?            @default("basic")
+  lastPaymentDate    DateTime?
+  nextBillingDate    DateTime?
+  paymentNotes       String?
+  trialEndsAt        DateTime?
+
+  // ── White-Label ───────────────────────────────────────────────────────────
+  /// Custom subdomain or domain for white-label
+  customDomain       String?
+  /// Brand colors & logo JSON: { primaryColor, logoUrl, brandName }
+  brandingConfig     Json?
+
+  // ── Anti-Ban settings ────────────────────────────────────────────────────
+  /// Anti-ban profile: conservative | moderate | aggressive
+  antiBanProfile     String  @default("conservative")
+  /// Custom delay range override in seconds
+  minDelaySec        Int     @default(5)
+  maxDelaySec        Int     @default(15)
+  /// Warmup mode: gradually increase sending
+  warmupEnabled      Boolean @default(true)
+
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  sessions     ConnectedNumber[]
+  groups       Group[]
+  senders      AuthorizedSender[]
+  campaigns    Campaign[]
+  aiLogs       AiActionLog[]
+  activityLogs ActivityLog[]
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  ACTIVE
+  SUSPENDED
+  EXPIRED
+  CANCELLED
+}
+
+// ─── Connected Numbers (WhatsApp Sessions) ─────────────────────────────────────
+
+model ConnectedNumber {
+  id              String       @id @default(cuid())
+  clientId        String
+  client          Client       @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  phoneNumber     String
+  displayName     String?
+  sessionData     Json?
+  status          NumberStatus @default(OFFLINE)
+  // Pairing code flow
+  pairingCode     String?
+  pairingCodeExpiresAt DateTime?
+  // Remote connect token (for /connect/[token] public page)
+  connectToken    String?      @unique
+  connectTokenExpiresAt DateTime?
+  // Anti-ban warmup stats
+  messagesSentToday   Int    @default(0)
+  warmupDay           Int    @default(1)
+  lastMessageAt       DateTime?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  @@unique([clientId, phoneNumber])
+  @@index([clientId])
+  @@index([connectToken])
+}
+
+enum NumberStatus {
+  ONLINE
+  OFFLINE
+  PAUSED
+  BANNED
+  WARMUP
+  QR_PENDING
+  PAIRING_PENDING
+}
+
+// ─── Groups ───────────────────────────────────────────────────────────────────
+
+model Group {
+  id         String   @id @default(cuid())
+  clientId   String
+  client     Client   @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  jid        String
+  name       String
+  customLink String?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@unique([clientId, jid])
+  @@index([clientId])
+}
+
+// ─── Authorized Senders ───────────────────────────────────────────────────────
+
+model AuthorizedSender {
+  id          String             @id @default(cuid())
+  clientId    String
+  client      Client             @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  phoneNumber String
+  displayName String?
+  permissions SenderPermission[]
+  groupAccess String[]
+  createdAt   DateTime           @default(now())
+  updatedAt   DateTime           @updatedAt
+
+  @@unique([clientId, phoneNumber])
+  @@index([clientId])
+}
+
+enum SenderPermission {
+  ADMIN
+  FREE_SENDING
+  DELETE_ALLOWED
+}
+
+// ─── Campaigns ────────────────────────────────────────────────────────────────
+
+model Campaign {
+  id              String         @id @default(cuid())
+  clientId        String
+  client          Client         @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  name            String
+  sourceGroupJid  String
+  triggerType     TriggerType    @default(LISTENER)
+  status          CampaignStatus @default(ACTIVE)
+  textSuffix      String?
+  mediaSuffix     String?
+  requireApproval Boolean        @default(true)
+  minDelay        Int            @default(5)
+  maxDelay        Int            @default(15)
+  // Stats
+  totalSent       Int            @default(0)
+  totalFailed     Int            @default(0)
+  lastRunAt       DateTime?
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+
+  targets CampaignTarget[]
+
+  @@index([clientId])
+  @@index([sourceGroupJid])
+}
+
+enum TriggerType {
+  DIRECT
+  LISTENER
+}
+
+enum CampaignStatus {
+  ACTIVE
+  PAUSED
+  STOPPED
+}
+
+// ─── Campaign Targets ─────────────────────────────────────────────────────────
+
+model CampaignTarget {
+  id         String   @id @default(cuid())
+  campaignId String
+  campaign   Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  groupJid   String
+  numberId   String?
+  createdAt  DateTime @default(now())
+
+  @@unique([campaignId, groupJid])
+  @@index([campaignId])
+}
+
+// ─── Message Mapping (for delete sync) ───────────────────────────────────────
+
+model MessageMapping {
+  id             String   @id @default(cuid())
+  clientId       String
+  sourceMsgId    String
+  sourceGroupJid String
+  targetGroupJid String
+  targetMsgId    String
+  targetMsgKey   Json
+  createdAt      DateTime @default(now())
+  expiresAt      DateTime @default(dbgenerated("NOW() + INTERVAL '7 days'"))
+
+  @@index([sourceMsgId])
+  @@index([clientId, sourceMsgId])
+  @@index([expiresAt])
+}
+
+// ─── Pending Approvals ────────────────────────────────────────────────────────
+
+model PendingApproval {
+  id             String         @id @default(cuid())
+  clientId       String
+  campaignId     String
+  senderPhone    String
+  messageContent Json
+  expiresAt      DateTime
+  status         ApprovalStatus @default(PENDING)
+  createdAt      DateTime       @default(now())
+}
+
+enum ApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  EXPIRED
+}
+
+// ─── AI Action Logs ───────────────────────────────────────────────────────────
+
+model AiActionLog {
+  id          String   @id @default(cuid())
+  clientId    String?
+  client      Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  adminEmail  String
+  userMessage String
+  aiResponse  String
+  toolCalls   Json?
+  createdAt   DateTime @default(now())
+}
+
+// ─── Activity Logs (for Staff support view) ───────────────────────────────────
+
+model ActivityLog {
+  id        String   @id @default(cuid())
+  clientId  String?
+  client    Client?  @relation(fields: [clientId], references: [id], onDelete: SetNull)
+  actor     String   // email of who did the action
+  action    String   // e.g. "client.suspended", "limits.reset", "number.connected"
+  details   Json?
+  ip        String?
+  createdAt DateTime @default(now())
+
+  @@index([clientId])
+  @@index([createdAt])
+}
