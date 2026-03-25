@@ -37,18 +37,29 @@ export class MessageHandler {
     const senderPhone = msg.key.participant?.replace(/@.+/, '') || '';
 
     // Find campaigns that match this source group
-    const campaigns = await prisma.campaign.findMany({
-      where: {
-        clientId: this.clientId,
-        sourceGroupJid: groupJid,
-        status: 'ACTIVE',
-        triggerType: 'LISTENER',
-      },
-      include: {
-        targets: true,
-        client: { select: { blockedHours: true, dailyLimit: true, dailyUsage: true } },
-      },
-    });
+    const [campaigns, systemSettings] = await Promise.all([
+      prisma.campaign.findMany({
+        where: {
+          clientId: this.clientId,
+          sourceGroupJid: groupJid,
+          status: 'ACTIVE',
+          triggerType: 'LISTENER',
+        },
+        include: {
+          targets: true,
+          client: {
+            select: {
+              blockedHours: true,
+              dailyLimit: true,
+              dailyMessageQuota: true,
+              dailyUsage: true,
+              allowedGroupJids: true,
+            },
+          },
+        },
+      }),
+      prisma.systemSettings.findUnique({ where: { id: 'singleton' } }),
+    ]);
 
     if (campaigns.length === 0) return;
 
@@ -62,7 +73,13 @@ export class MessageHandler {
     for (const campaign of campaigns) {
       // Check time blocking & Shabbat
       const client = campaign.client;
-      const timeCheck = checkTimeBlocking(client.blockedHours as BlockedHoursConfig | null);
+      const effectiveBlockedHours = (client.blockedHours as BlockedHoursConfig | null) ??
+        (systemSettings?.quietHours as BlockedHoursConfig | null);
+      const timeCheck = checkTimeBlocking(
+        effectiveBlockedHours,
+        new Date(),
+        systemSettings?.shabbatBlockEnabled ?? true,
+      );
 
       if (timeCheck.blocked) {
         // Auto-reply
@@ -70,8 +87,9 @@ export class MessageHandler {
         return;
       }
 
-      // Check quota
-      if (client.dailyUsage >= client.dailyLimit) {
+      // Check quota (per-client override takes precedence over default limit)
+      const effectiveDailyLimit = client.dailyMessageQuota ?? client.dailyLimit;
+      if (client.dailyUsage >= effectiveDailyLimit) {
         await this.sock.sendMessage(groupJid, {
           text: 'מכסת ההודעות היומית הגיעה לסיומה. פנה למנהל המערכת.',
         });
@@ -82,30 +100,37 @@ export class MessageHandler {
       const hasFreeAccess =
         sender.permissions.includes('FREE_SENDING') || sender.permissions.includes('ADMIN');
 
-      // Check group access restrictions
+      // Filter targets: client-level allowedGroupJids restriction (empty = allow all)
+      let targets: typeof campaign.targets = campaign.targets;
+      if (client.allowedGroupJids.length > 0) {
+        targets = targets.filter((t) => client.allowedGroupJids.includes(t.groupJid));
+        if (targets.length === 0) return;
+      }
+
+      // Sender-level group access restriction
       const allowedGroups = sender.groupAccess;
       if (allowedGroups.length > 0) {
-        const targetJids = campaign.targets.map((t) => t.groupJid);
-        const filteredTargets = targetJids.filter((jid) => allowedGroups.includes(jid));
-        if (filteredTargets.length === 0) {
-          return; // Sender has no access to any target group in this campaign
-        }
+        targets = targets.filter((t) => allowedGroups.includes(t.groupJid));
+        if (targets.length === 0) return;
       }
+
+      // Use filtered targets for this broadcast
+      const filteredCampaign = { ...campaign, targets };
 
       // Detect if message is a poll
       const contentType = getContentType(msg.message!);
       if (contentType === 'pollCreationMessage' || contentType === 'pollCreationMessageV2' || contentType === 'pollCreationMessageV3') {
         const pollForwarder = new PollForwarder(this.sock, this.clientId);
-        await pollForwarder.forward(msg, campaign);
+        await pollForwarder.forward(msg, filteredCampaign);
         continue;
       }
 
       if (hasFreeAccess || !campaign.requireApproval) {
         // Direct broadcast
-        await this.enqueueBroadcast(msg, campaign);
+        await this.enqueueBroadcast(msg, filteredCampaign);
       } else {
         // Need admin approval
-        await this.requestApproval(msg, campaign, senderPhone);
+        await this.requestApproval(msg, filteredCampaign, senderPhone);
       }
     }
   }

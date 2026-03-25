@@ -19,6 +19,16 @@ async function main() {
     },
   });
 
+  // Upsert system settings singleton
+  await prisma.systemSettings.upsert({
+    where: { id: 'singleton' },
+    update: {},
+    create: {
+      id: 'singleton',
+      shabbatBlockEnabled: true,
+    },
+  });
+
   // Upsert super admin Staff record (checked first in auth)
   await prisma.staff.upsert({
     where: { email },

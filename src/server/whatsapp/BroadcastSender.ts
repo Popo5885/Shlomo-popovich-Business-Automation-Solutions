@@ -137,7 +137,25 @@ export class BroadcastSender {
       } as unknown as AnyMessageContent;
     }
 
-    // For other content types, forward as-is
+    // viewOnce messages — strip viewOnce wrapper, forward inner media
+    if (contentType === 'viewOnceMessage' || contentType === 'viewOnceMessageV2' || contentType === 'viewOnceMessageV2Extension') {
+      const inner =
+        content.viewOnceMessage?.message ||
+        content.viewOnceMessageV2?.message ||
+        (content as Record<string, { message?: proto.IMessage }>).viewOnceMessageV2Extension?.message;
+      if (inner) {
+        const innerType = getContentType(inner);
+        return this.prepareContent(inner, innerType, targetGroupJid, opts);
+      }
+    }
+
+    // Channel / newsletter forward — re-wrap as a standard forward
+    if (contentType === 'newsletterAdminInviteMessage' || contentType === 'scheduledCallEditMessage') {
+      // These cannot be re-sent; skip gracefully
+      return { text: '' } as AnyMessageContent;
+    }
+
+    // For all other content types (stickers, reactions, locations, etc.) forward as-is
     return { forward: { key: { remoteJid: targetGroupJid, fromMe: false, id: 'fwd' }, message: content } } as unknown as AnyMessageContent;
   }
 

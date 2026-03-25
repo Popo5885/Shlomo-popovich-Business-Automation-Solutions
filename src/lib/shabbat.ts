@@ -55,12 +55,14 @@ export interface TimeCheckResult {
 
 /**
  * Main check — returns whether broadcasting is currently blocked.
+ * @param shabbatBlockEnabled - if false, Shabbat blocking is skipped (default true)
  */
 export function checkTimeBlocking(
   blockedHours: BlockedHoursConfig | null | undefined,
   now = new Date(),
+  shabbatBlockEnabled = true,
 ): TimeCheckResult {
-  if (isShabbat(now)) {
+  if (shabbatBlockEnabled && isShabbat(now)) {
     return {
       blocked: true,
       reason: 'shabbat',
