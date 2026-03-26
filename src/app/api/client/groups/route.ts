@@ -6,19 +6,27 @@ import { z } from 'zod';
 
 export async function GET(req: NextRequest) {
   const session = await auth();
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session || session.user.role !== 'client') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
-  const groups = await prisma.group.findMany({
-    where: { clientId: session.user.clientId },
-    orderBy: { name: 'asc' },
-  });
-
-  return NextResponse.json(groups);
+  try {
+    const groups = await prisma.group.findMany({
+      where: { clientId: session.user.clientId },
+      orderBy: { name: 'asc' },
+    });
+    return NextResponse.json(groups);
+  } catch (err) {
+    console.error('GET /api/client/groups error:', err);
+    return NextResponse.json([], { status: 200 });
+  }
 }
 
 export async function POST(req: NextRequest) {
   const session = await auth();
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session || session.user.role !== 'client') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   const body = await req.json();
   const schema = z.object({
@@ -39,7 +47,9 @@ export async function POST(req: NextRequest) {
 
 export async function PUT(req: NextRequest) {
   const session = await auth();
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session || session.user.role !== 'client') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   const body = await req.json();
   const schema = z.object({
@@ -59,7 +69,9 @@ export async function PUT(req: NextRequest) {
 
 export async function DELETE(req: NextRequest) {
   const session = await auth();
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session || session.user.role !== 'client') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
   const { searchParams } = new URL(req.url);
   const id = searchParams.get('id');
@@ -69,24 +81,44 @@ export async function DELETE(req: NextRequest) {
   return NextResponse.json({ success: true });
 }
 
-// Sync groups from WhatsApp
+// Sync groups from WhatsApp — tries ALL online sessions for this client
 export async function PATCH(req: NextRequest) {
   const session = await auth();
-  if (!session) return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  if (!session || session.user.role !== 'client') {
+    return NextResponse.json({ error: 'Unauthorized' }, { status: 401 });
+  }
 
-  const sm = SessionManager.getInstance();
-  const groups = await sm.fetchGroups(session.user.clientId);
+  const clientId = session.user.clientId;
 
-  // Upsert all fetched groups
-  const upserted = await Promise.all(
-    groups.map((g) =>
-      prisma.group.upsert({
-        where: { clientId_jid: { clientId: session.user.clientId, jid: g.id } },
-        update: { name: g.subject || g.id },
-        create: { clientId: session.user.clientId, jid: g.id, name: g.subject || g.id },
-      }),
-    ),
-  );
+  try {
+    const sm = SessionManager.getInstance();
+    const groups = await sm.fetchGroups(clientId);
 
-  return NextResponse.json({ synced: upserted.length });
+    if (groups.length === 0) {
+      return NextResponse.json({
+        synced: 0,
+        message: 'אין מספרים מחוברים או שלא נמצאו קבוצות',
+      });
+    }
+
+    // Upsert all fetched groups — run sequentially to avoid DB contention
+    let synced = 0;
+    for (const g of groups) {
+      try {
+        await prisma.group.upsert({
+          where: { clientId_jid: { clientId, jid: g.id } },
+          update: { name: g.subject || g.id },
+          create: { clientId, jid: g.id, name: g.subject || g.id },
+        });
+        synced++;
+      } catch (upsertErr) {
+        console.error(`Failed to upsert group ${g.id}:`, upsertErr);
+      }
+    }
+
+    return NextResponse.json({ synced });
+  } catch (err) {
+    console.error('PATCH /api/client/groups error:', err);
+    return NextResponse.json({ error: 'שגיאה בסנכרון קבוצות', synced: 0 }, { status: 500 });
+  }
 }

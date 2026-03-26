@@ -108,6 +108,9 @@ export class SessionManager {
         // Resume any paused queue for this number
         const qm = QueueManager.getInstance();
         await qm.resumeQueue(numberId);
+
+        // Auto-sync groups to DB (fire-and-forget, don't block connection)
+        setTimeout(() => this.syncGroupsToDB(clientId, sock), 3000);
       }
 
       if (connection === 'close') {
@@ -190,6 +193,27 @@ export class SessionManager {
 
   getSocket(clientId: string, numberId: string): WASocket | undefined {
     return this.sessions.get(this.getSessionKey(clientId, numberId))?.sock;
+  }
+
+  private async syncGroupsToDB(clientId: string, sock: WASocket): Promise<void> {
+    try {
+      const groups = await sock.groupFetchAllParticipating();
+      const entries = Object.values(groups);
+      if (entries.length === 0) return;
+
+      await Promise.all(
+        entries.map((g) =>
+          prisma.group.upsert({
+            where: { clientId_jid: { clientId, jid: g.id } },
+            update: { name: g.subject || g.id },
+            create: { clientId, jid: g.id, name: g.subject || g.id },
+          }),
+        ),
+      );
+      console.log(`📋 Auto-synced ${entries.length} groups for client ${clientId}`);
+    } catch (err) {
+      console.error(`syncGroupsToDB error for client ${clientId}:`, err);
+    }
   }
 
   async fetchGroups(clientId: string): Promise<Array<{ id: string; subject: string }>> {

@@ -20,21 +20,39 @@ export default function GroupsPage() {
   const [form, setForm] = useState({ jid: '', name: '', customLink: '' });
   const [syncing, setSyncing] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [syncMsg, setSyncMsg] = useState<string | null>(null);
 
   useEffect(() => {
     loadGroups();
   }, []);
 
   async function loadGroups() {
-    const res = await fetch('/api/client/groups');
-    setGroups(await res.json());
+    try {
+      const res = await fetch('/api/client/groups');
+      const data = await res.json();
+      setGroups(Array.isArray(data) ? data : []);
+    } catch {
+      setGroups([]);
+    }
   }
 
   async function syncGroups() {
     setSyncing(true);
-    await fetch('/api/client/groups', { method: 'PATCH' });
+    setSyncMsg(null);
+    try {
+      const res = await fetch('/api/client/groups', { method: 'PATCH' });
+      const data = await res.json();
+      if (data.error) {
+        setSyncMsg(`שגיאה: ${data.error}`);
+      } else {
+        setSyncMsg(data.synced > 0 ? `סונכרנו ${data.synced} קבוצות בהצלחה` : (data.message || 'לא נמצאו קבוצות'));
+      }
+    } catch {
+      setSyncMsg('שגיאה בסנכרון');
+    }
     await loadGroups();
     setSyncing(false);
+    setTimeout(() => setSyncMsg(null), 5000);
   }
 
   async function saveGroup() {
@@ -76,10 +94,17 @@ export default function GroupsPage() {
           <h1 className="text-2xl font-bold text-gray-900">קבוצות WhatsApp</h1>
           <p className="text-gray-500 mt-1">נהל קבוצות מקור ויעד לשידורים</p>
         </div>
-        <Button variant="outline" onClick={syncGroups} disabled={syncing} className="gap-2">
-          <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
-          סנכרן מ-WhatsApp
-        </Button>
+        <div className="flex flex-col items-end gap-1">
+          <Button variant="outline" onClick={syncGroups} disabled={syncing} className="gap-2">
+            <RefreshCw className={`w-4 h-4 ${syncing ? 'animate-spin' : ''}`} />
+            סנכרן מ-WhatsApp
+          </Button>
+          {syncMsg && (
+            <p className={`text-xs ${syncMsg.startsWith('שגיאה') ? 'text-red-500' : 'text-green-600'}`}>
+              {syncMsg}
+            </p>
+          )}
+        </div>
       </div>
 
       {/* Form */}
